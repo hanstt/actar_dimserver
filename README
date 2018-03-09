@@ -1,0 +1,21 @@
+
+	 DIM server
+	============
+
+Little thing to fork&exec and kill ucesb for recording data via DIM commands.
+
+Example invocation:
+export DIM_DNS_HOSTNAME=localhost # Defaults to pccore21.
+export DIM_DNS_PORT=2000          # Defaults to 2505.
+export LMD_DEST=/data/201804      # No default, must be set!
+./actar
+./compass
+
+The heart beats implemented by Ondrej Subrt are kept.
+
+compass.cc will cycle run open/close to make actar.cc take lots of runs with
+UCESB. The run start and run number are atomic to make sure they are in sync by
+sending "StartRun <number>", run stop is simply "StopRun".
+
+actar.cc provides the run number of the current run being taken by UCESB as
+"ActarRunNumber", and sends 0 otherwise.

@@ -18,6 +18,7 @@ char const *g_lmd_path;
 char const *g_log_path;
 int g_run_number;
 DimService *g_run_number_service;
+pid_t g_pid = -1;
 void logg(char const *a_fmt, ...)
 {
   time_t now = time(NULL);
@@ -40,6 +41,57 @@ void logg(char const *a_fmt, ...)
   vprintf(a_fmt, args);
   va_end(args);
   printf("\n");
+}
+
+void ucesb_start(char const *a_run_number)
+{
+  logg(" Starting UCESB...");
+  unsigned run_number = strtol(a_run_number, NULL, 10);
+  char const *ucesb_splitter = "/LynxOS/mbsusr/mbsdaq/actar_dimserver/ucesb_splitter.bash";
+  std::ostringstream oss;
+  oss << run_number;
+  g_pid = fork();
+  if (g_pid < 0) {
+    logg("fork failed: %s.", strerror(errno));
+  } else if (0 == g_pid) {
+    setsid();
+    logg(" %s %s", ucesb_splitter, oss.str().c_str());
+    execl(ucesb_splitter, ucesb_splitter, oss.str().c_str(), NULL);
+    logg(" execl failed: %s.", strerror(errno));
+    exit(EXIT_FAILURE);
+  } else {
+    g_run_number = run_number;
+    g_run_number_service->updateService();
+    logg(" Started UCESB!");
+  }
+}
+
+void ucesb_stop()
+{
+  if (-1 == g_pid) {
+    return;
+  }
+  logg(" Killing UCESB...");
+  kill(-g_pid, SIGINT);
+  int status = 0;
+  waitpid(g_pid, &status, 0);
+  if (WIFEXITED(status)) {
+    logg(" UCESB exited.");
+  }
+  g_pid = -1;
+  logg(" Killed UCESB!");
+  g_run_number = 0;
+  g_run_number_service->updateService();
+}
+
+void sighandler(int a_signum)
+{
+  (void)a_signum;
+  logg("Caught signal %u, cleaning up.", a_signum);
+  if (-1 != g_pid) {
+    ucesb_stop();
+  }
+  exit(EXIT_FAILURE);
 }
 }
 
@@ -71,65 +123,22 @@ class ActarRunControl: public DimCommand
 {
   public:
     ActarRunControl(char const *name):
-      DimCommand(name, "C"),
-      m_pid(-1) {}
+      DimCommand(name, "C") {}
 
     void commandHandler() {
       std::string command(getString());
       std::cout << command << '\n';
       if (0 == command.compare(0, 9, "StartRun ")) {
         logg("RUN START");
-        stop();
-        unsigned run_number = strtol(command.c_str() + 9, NULL, 10);
-        char const *empty = "/LynxOS/mbsusr/mbsdaq/local/ucesb/unpacker/empty/empty";
-        char const *trans = "--trans=rio4-1";
-        std::ostringstream oss;
-        oss << g_lmd_path << "/run" << std::setw(4) << std::setfill('0') << run_number << ".lmd";
-        char const *output_path = oss.str().c_str();
-        struct stat st;
-        if (-1 != stat(output_path, &st)) {
-          logg(" File \"%s\" already exists! I will not overwrite it!", output_path);
-          return;
-        }
-        std::ostringstream oss2;
-        oss2 << "--output=" <<  output_path;
-        m_pid = fork();
-        if (m_pid < 0) {
-          logg("fork failed: %s.", strerror(errno));
-          return;
-        } else if (0 == m_pid) {
-          logg(" %s %s %s", empty, trans, oss2.str().c_str());
-          execl(empty, empty, trans, oss2.str().c_str(), NULL);
-          logg(" execl failed: %s.", strerror(errno));
-          exit(EXIT_FAILURE);
-        } else {
-          g_run_number = run_number;
-          g_run_number_service->updateService();
-        }
+        ucesb_stop();
+        ucesb_start(command.c_str() + 9);
       } else if (command == "StopRun") {
         logg("RUN STOP");
-        stop();
+        ucesb_stop();
       } else {
         logg("Unknown command \"%s\"!", command.c_str());
       }
     }
-    void stop() {
-      if (-1 == m_pid) {
-        return;
-      }
-      kill(m_pid, SIGINT);
-      int status = 0;
-      waitpid(m_pid, &status, 0);
-      if (WIFEXITED(status)) {
-        logg(" UCESB exited.");
-      }
-      m_pid = -1;
-      g_run_number = 0;
-      g_run_number_service->updateService();
-    }
-
-  private:
-    pid_t m_pid;
 };
 
 int main()
@@ -155,6 +164,9 @@ int main()
     std::cerr << "DIM_LOG_PATH not set, please do!\n";
     exit(EXIT_FAILURE);
   }
+
+  signal(SIGINT, sighandler);
+  signal(SIGTERM, sighandler);
 
   DimServer::setDnsNode(dns_addr, dns_port);
   DimClient::setDnsNode(dns_addr, dns_port);
